@@ -2,8 +2,10 @@
 export interface VoiceConfig {
   id: string;
   name: string;
+  label: string;
   description: string;
   gender: 'male' | 'female' | 'neutral';
+  instruction: string;
   previewUrl?: string;
 }
 

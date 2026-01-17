@@ -28,58 +28,66 @@ export async function decodeAudioData(
   return buffer;
 }
 
-export function bufferToWavBlob(buffer: AudioBuffer): Blob {
-  const numOfChan = buffer.numberOfChannels;
-  const length = buffer.length * numOfChan * 2 + 44;
-  const bufferArray = new ArrayBuffer(length);
-  const view = new DataView(bufferArray);
-  const channels = [];
-  let i;
-  let sample;
-  let offset = 0;
-  let pos = 0;
-
-  // write WAVE header
-  setUint32(0x46464952); // "RIFF"
-  setUint32(length - 8); // file length - 8
-  setUint32(0x45564157); // "WAVE"
-
-  setUint32(0x20746d66); // "fmt " chunk
-  setUint32(16); // length = 16
-  setUint16(1); // PCM (uncompressed)
-  setUint16(numOfChan);
-  setUint32(buffer.sampleRate);
-  setUint32(buffer.sampleRate * 2 * numOfChan); // avg. bytes/sec
-  setUint16(numOfChan * 2); // block-align
-  setUint16(16); // 16-bit (hardcoded)
-
-  setUint32(0x61746164); // "data" - chunk
-  setUint32(length - pos - 4); // chunk length
-
-  // write interleaved data
-  for (i = 0; i < buffer.numberOfChannels; i++) {
-    channels.push(buffer.getChannelData(i));
+/**
+ * Encodes an AudioBuffer to a compressed MP3 Blob using lamejs.
+ * Requires lamejs to be available on the window object.
+ */
+export function bufferToMp3Blob(buffer: AudioBuffer): Blob {
+  const lame = (window as any).lamejs;
+  if (!lame) {
+    throw new Error("MP3 Encoder (lamejs) not loaded. Please check your internet connection.");
   }
 
-  while (pos < length) {
-    for (i = 0; i < numOfChan; i++) {
-      sample = Math.max(-1, Math.min(1, channels[i][offset])); // clamp
-      sample = (sample < 0 ? sample * 0x8000 : sample * 0x7FFF) | 0; // scale to 16-bit signed int
-      view.setInt16(pos, sample, true); // update write head
-      pos += 2;
+  const channels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const kbps = 128; // Standard professional bitrate
+  const mp3encoder = new lame.Mp3Encoder(channels, sampleRate, kbps);
+  
+  const mp3Data: Uint8Array[] = [];
+  
+  // We handle Mono (Kore/Puck etc are mono from Gemini) or Stereo
+  if (channels === 1) {
+    const samples = buffer.getChannelData(0);
+    const samplesInt16 = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      // Scale to 16-bit signed integer
+      samplesInt16[i] = samples[i] < 0 ? samples[i] * 0x8000 : samples[i] * 0x7FFF;
     }
-    offset++;
+
+    const sampleBlockSize = 1152; // Lame standard block size
+    for (let i = 0; i < samplesInt16.length; i += sampleBlockSize) {
+      const sampleChunk = samplesInt16.subarray(i, i + sampleBlockSize);
+      const mp3buf = mp3encoder.encodeBuffer(sampleChunk);
+      if (mp3buf.length > 0) {
+        mp3Data.push(new Uint8Array(mp3buf));
+      }
+    }
+  } else {
+    // Basic support for Stereo if ever used
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    const leftInt16 = new Int16Array(left.length);
+    const rightInt16 = new Int16Array(right.length);
+    for (let i = 0; i < left.length; i++) {
+      leftInt16[i] = left[i] < 0 ? left[i] * 0x8000 : left[i] * 0x7FFF;
+      rightInt16[i] = right[i] < 0 ? right[i] * 0x8000 : right[i] * 0x7FFF;
+    }
+
+    const sampleBlockSize = 1152;
+    for (let i = 0; i < leftInt16.length; i += sampleBlockSize) {
+      const leftChunk = leftInt16.subarray(i, i + sampleBlockSize);
+      const rightChunk = rightInt16.subarray(i, i + sampleBlockSize);
+      const mp3buf = mp3encoder.encodeBuffer(leftChunk, rightChunk);
+      if (mp3buf.length > 0) {
+        mp3Data.push(new Uint8Array(mp3buf));
+      }
+    }
   }
 
-  return new Blob([bufferArray], { type: 'audio/wav' });
-
-  function setUint16(data: number) {
-    view.setUint16(pos, data, true);
-    pos += 2;
+  const mp3buf = mp3encoder.flush();
+  if (mp3buf.length > 0) {
+    mp3Data.push(new Uint8Array(mp3buf));
   }
 
-  function setUint32(data: number) {
-    view.setUint32(pos, data, true);
-    pos += 4;
-  }
+  return new Blob(mp3Data, { type: 'audio/mpeg' });
 }
